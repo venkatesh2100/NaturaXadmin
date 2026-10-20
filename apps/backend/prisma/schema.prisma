@@ -1,0 +1,251 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+enum PaymentType {
+  PREPAID
+  COD
+}
+
+enum OrderStatus {
+  UNCONFIRMED
+  CONFIRMED
+  DISPATCHED
+  DELIVERED
+  FAILED_DELIVERY
+}
+
+enum FulfillmentStatus {
+  pending
+  confirmed
+  shipped
+  out_for_delivery
+  delivered
+  cancelled
+  failed
+  paid
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum TaskCategory {
+  UNCONFIRMED
+  DISPATCH_DELAY
+  SHIPMENT_DELAY
+  FAILED_DELIVERY
+  HIGH_VALUE_OVERDUE
+}
+
+enum IssueSeverity {
+  ERROR
+  WARNING
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email        String   @unique
+  googleId     String   @unique
+  passwordHash String?
+  role         Role     @default(STAFF)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions       Session[]
+  assignedOrders Order[]       @relation("AssignedEmployee")
+  assignedTasks  Task[]        @relation("AssignedTasks")
+  auditLogs      AuditLog[]    @relation("PerformedBy")
+  importBatches  ImportBatch[]
+
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OAuthState {
+  id           String   @id @default(cuid())
+  state        String   @unique
+  nonce        String
+  codeVerifier String
+  returnTo     String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+model Order {
+  id                   String       @id @default(cuid())
+  orderId              String       @unique
+  orderDate            DateTime
+  customerName         String
+  phone                String
+  orderValue           Decimal      @db.Decimal(12, 2)
+  paymentType          PaymentType
+  orderStatus          OrderStatus
+  fulfillmentStatus    FulfillmentStatus @default(pending)
+  dispatchDate         DateTime?
+  expectedDeliveryDate DateTime?
+  deliveredDate        DateTime?
+  assignedEmployeeId   String?
+  assignedEmployee     User?        @relation("AssignedEmployee", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
+  importBatchId        String?
+  importBatch          ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  tasks               Task[]
+  auditLogs           AuditLog[]
+  dataQualityIssues   DataQualityIssue[]
+
+  @@index([orderDate])
+  @@index([orderStatus])
+  @@index([assignedEmployeeId])
+  @@index([expectedDeliveryDate])
+  @@index([importBatchId])
+}
+
+model Task {
+  id                 String       @id @default(cuid())
+  orderId            String
+  order              Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  category           TaskCategory
+  reason             String
+  priority           TaskPriority
+  assignedEmployeeId String?
+  assignedEmployee   User?        @relation("AssignedTasks", fields: [assignedEmployeeId], references: [id], onDelete: SetNull)
+  actionRequired     String
+  deadline           DateTime
+  status             TaskStatus   @default(OPEN)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  resolvedAt         DateTime?
+
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  @@unique([orderId, category])
+  @@index([status, priority, deadline])
+  @@index([assignedEmployeeId])
+  @@index([category])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  taskId        String
+  task          Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  action        String
+  oldValue      String?
+  newValue      String?
+  performedById String?
+  performedBy   User?    @relation("PerformedBy", fields: [performedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([orderId])
+  @@index([performedById])
+  @@index([createdAt])
+}
+
+model ImportBatch {
+  id             String   @id @default(cuid())
+  filename       String
+  totalRows      Int
+  successfulRows Int
+  rejectedRows   Int
+  createdById    String
+  createdBy      User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime @default(now())
+
+  orders Order[]
+  issues ImportIssue[]
+
+  @@index([createdById])
+  @@index([createdAt])
+}
+
+model ImportIssue {
+  id            String        @id @default(cuid())
+  importBatchId String
+  importBatch   ImportBatch   @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  rowNumber     Int
+  orderId       String?
+  field         String?
+  message       String
+  severity      IssueSeverity
+  raw           Json?
+
+  @@index([importBatchId])
+}
+
+model DataQualityIssue {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  code      String
+  message   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orderId, code])
+  @@index([code])
+}
+
+model Notification {
+  id        String             @id @default(cuid())
+  dedupeKey String             @unique
+  taskId    String?
+  task      Task?              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  event     String
+  status    NotificationStatus
+  attempts  Int                @default(0)
+  lastError String?
+  sentAt    DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([taskId])
+  @@index([status])
+}
