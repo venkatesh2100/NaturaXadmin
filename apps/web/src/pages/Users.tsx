@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Banner, PageTitle } from "../components/Shell";
+import { Loading } from "../components/Spinner";
 import type { Role, User } from "../types";
 
 export function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   function load() {
-    api<{ users: User[] }>("/users").then((result) => setUsers(result.users)).catch((err: Error) => setError(err.message));
+    api<{ users: User[] }>("/users")
+      .then((result) => setUsers(result.users))
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
@@ -27,8 +32,10 @@ export function UsersPage() {
 
   return (
     <div>
-      <PageTitle title="Team" detail="Admins assign tasks to employees. Employees pick unassigned tasks and update order status on their own tasks." />
+      <PageTitle title="Team" detail="Admin can assign tasks, change task status, and change roles. Employee can pick an unassigned task and update the order status and deadline on their own tasks." />
       {error && <Banner>{error}</Banner>}
+      {loading && <Loading />}
+      {!loading && (
       <div className="overflow-x-auto rounded-xl border border-line bg-white">
         <table className="min-w-full text-left text-sm">
           <thead className="border-b border-line text-xs uppercase tracking-wide text-stone-500">
@@ -44,7 +51,7 @@ export function UsersPage() {
                 <td className="px-3 py-2">{user.name}</td>
                 <td className="px-3 py-2">{user.email}</td>
                 <td className="px-3 py-2">
-                  <select className="rounded-md border border-line px-2 py-1" value={user.role} onChange={(event) => void changeRole(user.id, event.target.value as Role)}>
+                  <select className="max-w-[9rem] rounded-md border border-line" value={user.role} onChange={(event) => void changeRole(user.id, event.target.value as Role)} aria-label={`Role for ${user.name}`}>
                     <option value="ADMIN">Admin</option>
                     <option value="STAFF">Employee</option>
                   </select>
@@ -54,6 +61,7 @@ export function UsersPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { safeFilename } from "../lib/csv.js";
 import { deadlineFor, evaluateOrder } from "./rules.js";
 import { parseOrderFile } from "./parse-file.js";
 import { planTaskSync } from "./task-sync.js";
+import { log } from "../logger.js";
 import { isUniqueViolation, notifyTaskEvents } from "./notifications.js";
 import type { RowIssue, ValidOrder } from "./validate-row.js";
 
@@ -24,8 +25,10 @@ export async function importOrders(input: {
   userId: string;
   now?: Date;
 }): Promise<ImportSummary> {
+  const started = Date.now();
   const now = input.now ?? new Date();
   const filename = safeFilename(input.filename);
+  log("info", "import started", { filename, bytes: input.buffer.length });
   const parsed = await parseOrderFile(filename, input.buffer);
   const prisma = getPrisma();
   const users = await prisma.user.findMany({ select: { id: true, name: true, email: true } });
@@ -59,27 +62,49 @@ export async function importOrders(input: {
         return { row, employeeId: match.id };
       });
 
-  const errorRows = new Set(issues.filter((issue) => issue.severity === "ERROR").map((issue) => issue.rowNumber));
-  const createdTaskIds: string[] = [];
+  const existing = prepared.length
+    ? await prisma.order.findMany({
+        where: { orderId: { in: prepared.map((item) => item.row.orderId) } },
+        select: { orderId: true },
+      })
+    : [];
+  const existingIds = new Set(existing.map((order) => order.orderId));
+  const fresh = prepared.filter((item) => {
+    if (!existingIds.has(item.row.orderId)) return true;
+    issues.push({
+      rowNumber: item.row.rowNumber,
+      orderId: item.row.orderId,
+      field: "orderId",
+      message: "This order already exists. Duplicate orders were not imported.",
+      severity: "ERROR",
+      raw: item.row.raw,
+    });
+    return false;
+  });
 
+  const errorRows = new Set(issues.filter((issue) => issue.severity === "ERROR").map((issue) => issue.rowNumber));
+  const rejectedRows = parsed.missingColumns.length > 0 ? parsed.totalRows : errorRows.size;
+  log("info", "import checked", {
+    filename,
+    totalRows: parsed.totalRows,
+    ready: fresh.length,
+    rejected: rejectedRows,
+    duplicates: prepared.length - fresh.length,
+  });
+
+  const createdTaskIds: string[] = [];
   const batch = await prisma.$transaction(
     async (tx) => {
       const createdBatch = await tx.importBatch.create({
         data: {
           filename,
           totalRows: parsed.totalRows,
-          successfulRows: prepared.length,
-          rejectedRows: parsed.missingColumns.length > 0 ? parsed.totalRows : errorRows.size,
+          successfulRows: fresh.length,
+          rejectedRows,
           createdById: input.userId,
         },
       });
-
-      for (const item of prepared) {
-        const order = await upsertOrder(tx, item.row, item.employeeId, createdBatch.id);
-        const taskIds = await reevaluateOrder(tx, order, order.assignedEmployeeId, now);
-        createdTaskIds.push(...taskIds);
-      }
-
+      createdTaskIds.push(...(await writeFreshOrders(tx, fresh, createdBatch.id, now)));
       if (issues.length > 0) {
         await tx.importIssue.createMany({
           data: issues.map((issue) => ({
@@ -93,24 +118,109 @@ export async function importOrders(input: {
           })),
         });
       }
-
       return createdBatch;
     },
-    { timeout: 900_000 },
+    { timeout: 60_000 },
   );
 
-  await notifyTaskEvents(createdTaskIds, "created");
+  void notifyTaskEvents(createdTaskIds, "created");
+  log("info", "import finished", {
+    filename,
+    batchId: batch.id,
+    imported: fresh.length,
+    rejected: rejectedRows,
+    tasks: createdTaskIds.length,
+    ms: Date.now() - started,
+  });
 
   return {
     batchId: batch.id,
     filename,
     totalRows: parsed.totalRows,
-    successfulRows: prepared.length,
-    rejectedRows: parsed.missingColumns.length > 0 ? parsed.totalRows : errorRows.size,
+    successfulRows: fresh.length,
+    rejectedRows,
     warningCount: issues.filter((issue) => issue.severity === "WARNING").length,
     tasksCreated: createdTaskIds.length,
     issues: issues.slice(0, 300),
   };
+}
+
+async function writeFreshOrders(
+  tx: Prisma.TransactionClient,
+  fresh: Array<{ row: ValidOrder; employeeId: string | null }>,
+  importBatchId: string,
+  now: Date,
+): Promise<string[]> {
+  if (fresh.length === 0) return [];
+  const orders = await tx.order.createManyAndReturn({
+    data: fresh.map((item) => ({
+      orderId: item.row.orderId,
+      orderDate: item.row.orderDate,
+      customerName: item.row.customerName,
+      phone: item.row.phone,
+      orderValue: item.row.orderValue.toFixed(2),
+      paymentType: item.row.paymentType,
+      orderStatus: item.row.orderStatus,
+      fulfillmentStatus: item.row.fulfillmentStatus,
+      dispatchDate: item.row.dispatchDate,
+      expectedDeliveryDate: item.row.expectedDeliveryDate,
+      deliveredDate: item.row.deliveredDate,
+      assignedEmployeeId: item.employeeId,
+      importBatchId,
+    })),
+  });
+  const saved = new Map(orders.map((order) => [order.orderId, order]));
+  const tasks: Prisma.TaskCreateManyInput[] = [];
+  const quality: Prisma.DataQualityIssueCreateManyInput[] = [];
+  for (const item of fresh) {
+    const order = saved.get(item.row.orderId);
+    if (!order) continue;
+    const evaluation = evaluateOrder(
+      {
+        orderStatus: item.row.orderStatus,
+        fulfillmentStatus: item.row.fulfillmentStatus,
+        orderDate: item.row.orderDate,
+        orderValue: item.row.orderValue,
+        dispatchDate: item.row.dispatchDate,
+        expectedDeliveryDate: item.row.expectedDeliveryDate,
+        deliveredDate: item.row.deliveredDate,
+      },
+      now,
+    );
+    for (const hit of evaluation.tasks) {
+      tasks.push({
+        orderId: order.id,
+        category: hit.category,
+        reason: hit.reason,
+        priority: hit.priority,
+        actionRequired: hit.actionRequired,
+        deadline: deadlineFor(hit.priority, now),
+        assignedEmployeeId: item.employeeId,
+        status: "OPEN",
+      });
+    }
+    for (const finding of evaluation.dataQuality) {
+      quality.push({ orderId: order.id, code: finding.code, message: finding.message });
+    }
+  }
+  const created = tasks.length
+    ? await tx.task.createManyAndReturn({
+        data: tasks,
+        select: { id: true, orderId: true, category: true, priority: true },
+      })
+    : [];
+  if (created.length > 0) {
+    await tx.auditLog.createMany({
+      data: created.map((task) => ({
+        taskId: task.id,
+        orderId: task.orderId,
+        action: "TASK_CREATED" as const,
+        newValue: JSON.stringify({ category: task.category, priority: task.priority }),
+      })),
+    });
+  }
+  if (quality.length > 0) await tx.dataQualityIssue.createMany({ data: quality });
+  return created.map((task) => task.id);
 }
 
 function matchEmployee(
@@ -126,30 +236,16 @@ function matchEmployee(
   return { id: match.id, warning: null };
 }
 
-async function upsertOrder(
-  tx: Prisma.TransactionClient,
-  row: ValidOrder,
-  employeeId: string | null,
-  importBatchId: string,
-) {
-  const data = {
-    orderDate: row.orderDate,
-    customerName: row.customerName,
-    phone: row.phone,
-    orderValue: row.orderValue.toFixed(2),
-    paymentType: row.paymentType,
-    orderStatus: row.orderStatus,
-    dispatchDate: row.dispatchDate,
-    expectedDeliveryDate: row.expectedDeliveryDate,
-    deliveredDate: row.deliveredDate,
-    assignedEmployeeId: employeeId,
-    importBatchId,
-  };
-  return tx.order.upsert({
-    where: { orderId: row.orderId },
-    create: { orderId: row.orderId, ...data, fulfillmentStatus: row.fulfillmentStatus },
-    update: data,
-  });
+export function scheduleReevaluate(
+  order: Parameters<typeof reevaluateOrder>[1],
+  assigneeId: string | null,
+): void {
+  void getPrisma()
+    .$transaction((tx) => reevaluateOrder(tx, order, assigneeId, new Date()))
+    .then((created) => notifyTaskEvents(created, "created"))
+    .catch((error: unknown) => {
+      log("warn", "rule check failed", { error: error instanceof Error ? error.message : "unknown" });
+    });
 }
 
 export async function reevaluateOrder(

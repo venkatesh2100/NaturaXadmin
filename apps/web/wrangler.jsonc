@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "naturax-web",
+  "account_id": "d2cd9b012b1b8b725616947ec5e810cb",
+  "workers_dev": true,
+  "compatibility_date": "2026-10-20",
+  "assets": {
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  }
+}

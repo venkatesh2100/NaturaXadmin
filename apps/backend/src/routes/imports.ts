@@ -4,6 +4,7 @@ import { asyncRoute } from "../http.js";
 import { AppError } from "../lib/errors.js";
 import { toCsv } from "../lib/csv.js";
 import { getPrisma } from "../lib/prisma.js";
+import { log } from "../logger.js";
 import { requireAuth } from "../middleware/auth.js";
 import { importOrders } from "../services/import.js";
 
@@ -21,10 +22,22 @@ importRouter.post(
   upload.single("file"),
   asyncRoute(async (req, res) => {
     if (!req.file) throw new AppError(400, "FILE_REQUIRED", "Choose a CSV or Excel file.");
+    log("info", "import upload", {
+      requestId: req.requestId,
+      filename: req.file.originalname || "upload",
+      bytes: req.file.size,
+    });
     const summary = await importOrders({
       filename: req.file.originalname || "upload",
       buffer: req.file.buffer,
       userId: req.user!.id,
+    });
+    log("info", "import response", {
+      requestId: req.requestId,
+      batchId: summary.batchId,
+      imported: summary.successfulRows,
+      rejected: summary.rejectedRows,
+      tasks: summary.tasksCreated,
     });
     res.status(201).json(summary);
   }),

@@ -3,13 +3,6 @@ export const UNCONFIRMED_AFTER_MS = 2 * HOUR_MS;
 export const DISPATCH_AFTER_MS = 24 * HOUR_MS;
 export const HIGH_VALUE_RUPEES = 5000;
 
-/**
- * Deadline policy, measured from the moment the exception is detected:
- * - HIGH: 2 hours. Customer-facing failures should be touched in the same shift.
- * - MEDIUM: 8 hours. Courier checks can wait for the next tracking sweep.
- * - LOW: 24 hours. Reserved for future lower-urgency categories.
- * The current rules emit only HIGH and MEDIUM.
- */
 export const DEADLINE_MS = {
   HIGH: 2 * HOUR_MS,
   MEDIUM: 8 * HOUR_MS,
@@ -32,15 +25,18 @@ export type OrderStatusName =
   | "DELIVERED"
   | "FAILED_DELIVERY";
 
-export type FulfillmentName =
-  | "pending"
-  | "confirmed"
-  | "shipped"
-  | "out_for_delivery"
-  | "delivered"
-  | "cancelled"
-  | "failed"
-  | "paid";
+export const FULFILLMENT_STATUSES = [
+  "pending",
+  "confirmed",
+  "shipped",
+  "out_for_delivery",
+  "delivered",
+  "cancelled",
+  "failed",
+  "paid",
+] as const;
+
+export type FulfillmentName = (typeof FULFILLMENT_STATUSES)[number];
 
 const LEGACY_STATUS: Record<OrderStatusName, FulfillmentName> = {
   UNCONFIRMED: "pending",

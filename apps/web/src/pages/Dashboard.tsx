@@ -1,130 +1,155 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
-import { Filters, toApiQuery, useFilters } from "../components/Filters";
-import { Banner, Empty, PageTitle, PriorityMark, Stat } from "../components/Shell";
+import { Banner, Empty, PageTitle, PriorityMark, Stat, buttonClass } from "../components/Shell";
+import { Loading } from "../components/Spinner";
 import { formatWhen } from "../format";
-import { CATEGORY_LABELS, type Category, type Task, type Page } from "../types";
-
-type Metrics = {
-  totalOrders: number;
-  ordersRequiringAttention: number;
-  openTasks: number;
-  overdueTasks: number;
-  highPriority: number;
-  dataQuality: number;
-  byCategory: { category: Category; count: number }[];
-  pendingByEmployee: { employeeId: string | null; employee: string; count: number }[];
-  recentActivity: { id: string; action: string; orderId: string; performedBy: string; summary: string; createdAt: string }[];
-};
+import { useAuth } from "../store";
+import { CATEGORY_HELP, CATEGORY_LABELS, PRIORITY_HELP, type Category, type Metrics, type Page, type Task } from "../types";
 
 export function DashboardPage() {
-  const { filters, setFilter } = useFilters();
+  const user = useAuth((state) => state.user);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [urgent, setUrgent] = useState<Task[]>([]);
   const [error, setError] = useState("");
-  const query = toApiQuery({ ...filters, page: "" });
-  const urgentQuery = toApiQuery({ ...filters, priority: filters.priority || "HIGH", status: filters.status || "OPEN", pageSize: "5", page: "1" });
 
   useEffect(() => {
-    setError("");
     Promise.all([
-      api<Metrics>(`/dashboard?${query}`),
-      api<Page<Task>>(`/tasks?${urgentQuery}`),
+      api<Metrics>("/dashboard"),
+      api<Page<Task>>("/tasks?priority=HIGH&status=OPEN&sort=deadline&order=asc&pageSize=6&page=1"),
     ])
-      .then(([nextMetrics, tasks]) => {
+      .then(([nextMetrics, nextTasks]) => {
         setMetrics(nextMetrics);
-        setUrgent(tasks.data);
+        setUrgent(nextTasks.data);
       })
       .catch((err: Error) => setError(err.message));
-  }, [query, urgentQuery]);
+  }, []);
+
+  const greeting = user?.role === "ADMIN"
+    ? "You assign work and close tasks. Start with anything marked high."
+    : "Pick an open task, then update the order after you call the customer.";
 
   return (
     <div>
-      <PageTitle title="What needs a person today" detail="Exceptions are created from order timestamps. Delivered orders stay off this queue." />
-      <Filters filters={filters} setFilter={setFilter} showSearch={false} />
+      <PageTitle
+        title="Today"
+        detail={`${user ? `${user.name}. ` : ""}${greeting} Delivered, cancelled, and paid orders stay off this desk.`}
+      />
       {error && <Banner>{error}</Banner>}
-      {!metrics && !error && <p className="text-sm text-stone-500">Loading the queue…</p>}
+      {!metrics && !error && <Loading />}
       {metrics && (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <Stat label="Orders uploaded" value={metrics.totalOrders} />
-            <Stat label="Orders needing attention" value={metrics.ordersRequiringAttention} />
-            <Stat label="Open tasks" value={metrics.openTasks} />
-            <Stat label="Overdue tasks" value={metrics.overdueTasks} hint="Deadline has passed" />
-            <Stat label="High priority" value={metrics.highPriority} />
-            <Stat label="Data to correct" value={metrics.dataQuality} hint="Rules skipped for missing dates" />
-          </div>
-          <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            <section className="rounded-xl border border-line bg-white p-4">
-              <h2 className="text-sm font-semibold">Exceptions by category</h2>
-              <ul className="mt-3 space-y-2">
-                {metrics.byCategory.length === 0 && <li className="text-sm text-stone-500">No exceptions in this view.</li>}
-                {metrics.byCategory.map((item) => (
-                  <li key={item.category} className="flex items-center justify-between text-sm">
-                    <span>{CATEGORY_LABELS[item.category]}</span>
-                    <span className="tabular font-medium">{item.count}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <section className="rounded-xl border border-line bg-white p-4">
-              <h2 className="text-sm font-semibold">Pending by employee</h2>
-              <ul className="mt-3 space-y-2">
-                {metrics.pendingByEmployee.length === 0 && <li className="text-sm text-stone-500">No pending tasks.</li>}
-                {metrics.pendingByEmployee.map((item) => (
-                  <li key={item.employee} className="flex items-center justify-between text-sm">
-                    <span>{item.employee}</span>
-                    <span className="tabular font-medium">{item.count}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          </div>
-          <section className="mt-6">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">High-priority cases</h2>
-              <Link className="text-sm text-brand" to="/tasks?priority=HIGH&status=OPEN">Open the queue</Link>
-            </div>
-            {urgent.length === 0 ? <Empty>No high-priority tasks match these filters.</Empty> : (
-              <div className="overflow-x-auto rounded-xl border border-line bg-white">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="border-b border-line text-xs uppercase tracking-wide text-stone-500">
-                    <tr>
-                      <th className="px-3 py-2">Order</th>
-                      <th className="px-3 py-2">Customer</th>
-                      <th className="px-3 py-2">Reason</th>
-                      <th className="px-3 py-2">Deadline</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {urgent.map((task) => (
-                      <tr key={task.id} className="border-b border-line last:border-0">
-                        <td className="px-3 py-2"><Link className="font-medium text-brand" to={`/tasks/${task.id}`}>{task.order.orderId}</Link></td>
-                        <td className="px-3 py-2">{task.order.customerName}</td>
-                        <td className="px-3 py-2"><PriorityMark priority={task.priority} /> <span className="mt-1 block text-stone-600">{task.reason}</span></td>
-                        <td className="px-3 py-2">{formatWhen(task.deadline)}{task.overdue ? " · overdue" : ""}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+          <section className="grid grid-cols-2 gap-x-8 gap-y-6 border-y border-line py-6 md:grid-cols-3">
+            <Stat label="Open tasks" value={metrics.openTasks} hint="Open or in progress. Not finished yet." />
+            <Stat label="Due now" value={metrics.overdueTasks} hint="The response deadline has already passed." />
+            <Stat label="High priority" value={metrics.highPriority} hint="Same-shift follow-up. Act within 2 hours." />
+            <Stat label="Orders" value={metrics.totalOrders} hint="Every order stored from imports." />
+            <Stat label="Need attention" value={metrics.ordersRequiringAttention} hint="Orders that still have an unfinished task." />
+            <Stat label="Data issues" value={metrics.dataQuality} hint="Missing dates, so a rule could not run." />
           </section>
-          <section className="mt-6 rounded-xl border border-line bg-white p-4">
-            <h2 className="text-sm font-semibold">Recent activity</h2>
-            <ul className="mt-3 space-y-2 text-sm">
-              {metrics.recentActivity.length === 0 && <li className="text-stone-500">No updates yet.</li>}
-              {metrics.recentActivity.map((entry) => (
-                <li key={entry.id} className="flex flex-wrap justify-between gap-2">
-                  <span><span className="font-medium">{entry.performedBy}</span> {entry.summary}</span>
-                  <span className="text-stone-500">{formatWhen(entry.createdAt)}</span>
-                </li>
-              ))}
-            </ul>
+
+          <section className="mt-8 grid gap-3 md:grid-cols-3">
+            <Guide title="High" body={PRIORITY_HELP.HIGH} />
+            <Guide title="Medium" body={PRIORITY_HELP.MEDIUM} />
+            <Guide title="Low" body={PRIORITY_HELP.LOW} />
+          </section>
+
+          <section className="mt-10 grid gap-10 lg:grid-cols-[1.25fr_0.75fr]">
+            <div>
+              <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold">Needs attention</h2>
+                  <p className="mt-1 text-sm text-black/55">High-priority tasks that are still open. These should be touched in this shift.</p>
+                </div>
+                <Link to="/tasks?priority=HIGH&status=OPEN" className={buttonClass()}>All high-priority tasks</Link>
+              </div>
+              {urgent.length === 0 ? <Empty>No high-priority tasks are waiting. Check the full task queue for medium items.</Empty> : (
+                <ul className="space-y-3">
+                  {urgent.map((task) => (
+                    <li key={task.id} className="rounded-2xl border border-line bg-white p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <Link to={`/tasks/${task.id}`} className="text-sm font-semibold hover:underline">{task.order.orderId}</Link>
+                          <p className="text-sm text-black/60">{task.order.customerName} · {CATEGORY_LABELS[task.category]}</p>
+                        </div>
+                        <PriorityMark priority={task.priority} />
+                      </div>
+                      <p className="mt-3 text-sm">{task.reason}</p>
+                      <p className="mt-1 text-sm text-black/60">Next step: {task.actionRequired}</p>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-xs text-black/50">
+                          Deadline {formatWhen(task.deadline)}
+                          {task.overdue ? " · overdue" : ""}
+                          {task.assignedEmployee ? ` · ${task.assignedEmployee.name}` : " · unassigned"}
+                        </p>
+                        <Link to={`/tasks/${task.id}`} className={buttonClass("primary")}>Open task</Link>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold">Recent activity</h2>
+              <p className="mt-1 text-sm text-black/55">Who changed an order, picked a task, or moved a deadline.</p>
+              {metrics.recentActivity.length === 0 ? <Empty>No updates yet. Activity appears after an import or a task change.</Empty> : (
+                <ul className="mt-3 divide-y divide-line">
+                  {metrics.recentActivity.slice(0, 8).map((entry) => (
+                    <li key={entry.id} className="py-3">
+                      <p className="text-sm"><span className="font-medium">{entry.performedBy}</span> {entry.summary}</p>
+                      <p className="mt-1 text-xs text-black/45">{formatWhen(entry.createdAt)} · India time</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          <section className="mt-10 grid gap-10 lg:grid-cols-2">
+            <div>
+              <h2 className="text-lg font-semibold">Why a task exists</h2>
+              <p className="mt-1 text-sm text-black/55">Each category is a rule. Priority is fixed by the rule, not by how many days late the shipment is.</p>
+              <ul className="mt-3 divide-y divide-line">
+                {(Object.keys(CATEGORY_LABELS) as Category[]).map((category) => {
+                  const count = metrics.byCategory?.find((row) => row.category === category)?.count ?? 0;
+                  return (
+                    <li key={category} className="flex items-start justify-between gap-4 py-3 text-sm">
+                      <span>
+                        <span className="font-medium">{CATEGORY_LABELS[category]}</span>
+                        <span className="mt-0.5 block text-black/55">{CATEGORY_HELP[category]}</span>
+                      </span>
+                      <span className="tabular text-black/55">{count}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold">Open by employee</h2>
+              <p className="mt-1 text-sm text-black/55">Unfinished tasks currently sitting with each person. Unassigned means nobody has picked them yet.</p>
+              {metrics.pendingByEmployee.length === 0 ? <Empty>No open tasks are assigned.</Empty> : (
+                <ul className="mt-3 divide-y divide-line">
+                  {metrics.pendingByEmployee.map((row) => (
+                    <li key={row.employeeId ?? "none"} className="flex items-center justify-between py-3 text-sm">
+                      <span>{row.employeeId ? row.employee : "Unassigned"}</span>
+                      <span className="tabular text-black/55">{row.count} open</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </section>
         </>
       )}
+    </div>
+  );
+}
+
+function Guide({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-[14px] border border-line bg-paper px-4 py-3">
+      <p className="text-sm font-medium">{title}</p>
+      <p className="mt-1 text-sm text-black/60">{body}</p>
     </div>
   );
 }

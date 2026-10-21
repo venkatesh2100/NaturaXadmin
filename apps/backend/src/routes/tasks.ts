@@ -6,20 +6,9 @@ import { AppError } from "../lib/errors.js";
 import { getPrisma } from "../lib/prisma.js";
 import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import { taskOrderBy, taskWhere } from "../services/filters.js";
-import { reevaluateOrder } from "../services/import.js";
-import { notifyTaskEvents } from "../services/notifications.js";
-import { assertCanChangeStatus, assertCanClaim, assertCanReassign } from "../services/permissions.js";
-
-const ORDER_STATUS_OPTIONS = [
-  "pending",
-  "confirmed",
-  "shipped",
-  "out_for_delivery",
-  "delivered",
-  "cancelled",
-  "failed",
-  "paid",
-] as const;
+import { scheduleReevaluate } from "../services/import.js";
+import { assertCanChangeStatus, assertCanClaim, assertCanReassign, assertCanSetTaskStatus } from "../services/permissions.js";
+import { FULFILLMENT_STATUSES } from "../services/rules.js";
 
 export const taskRouter = Router();
 const taskInclude = {
@@ -98,10 +87,13 @@ taskRouter.patch(
     assertCanReassign(req.user!);
     const body = z.object({ employeeId: z.string().min(1).nullable() }).parse(req.body);
     const prisma = getPrisma();
-    const task = await prisma.task.findUnique({ where: { id: String(req.params.id) } });
+    const task = await prisma.task.findUnique({
+      where: { id: String(req.params.id) },
+      include: { assignedEmployee: { select: { id: true, name: true } } },
+    });
     if (!task) throw new AppError(404, "NOT_FOUND", "Task not found.");
     const nextEmployee = body.employeeId
-      ? await prisma.user.findUnique({ where: { id: body.employeeId } })
+      ? await prisma.user.findUnique({ where: { id: body.employeeId }, select: { id: true, name: true, role: true } })
       : null;
     if (body.employeeId && !nextEmployee) throw new AppError(400, "VALIDATION_ERROR", "Employee not found.");
     if (nextEmployee && nextEmployee.role !== "STAFF") {
@@ -112,14 +104,23 @@ taskRouter.patch(
       res.json(serializeTask(current));
       return;
     }
-    const previous = task.assignedEmployeeId
-      ? await prisma.user.findUnique({ where: { id: task.assignedEmployeeId } })
-      : null;
+    const previous = task.assignedEmployee;
+    const clearing = !nextEmployee;
+    const overdueHandoff = Boolean(
+      nextEmployee &&
+      task.assignedEmployeeId &&
+      task.assignedEmployeeId !== nextEmployee.id &&
+      task.deadline.getTime() < Date.now(),
+    );
 
     const updated = await prisma.$transaction(async (tx) => {
       const saved = await tx.task.update({
         where: { id: task.id },
-        data: { assignedEmployeeId: nextEmployee?.id ?? null },
+        data: {
+          assignedEmployeeId: nextEmployee?.id ?? null,
+          ...(clearing ? { status: "OPEN", resolvedAt: null } : {}),
+          ...(overdueHandoff ? { priority: "HIGH" } : {}),
+        },
         include: taskInclude,
       });
       await tx.auditLog.create({
@@ -181,7 +182,7 @@ taskRouter.post(
 taskRouter.patch(
   "/:id/order-status",
   asyncRoute(async (req, res) => {
-    const body = z.object({ status: z.enum(ORDER_STATUS_OPTIONS) }).parse(req.body);
+    const body = z.object({ status: z.enum(FULFILLMENT_STATUSES) }).parse(req.body);
     const prisma = getPrisma();
     const task = await prisma.task.findUnique({
       where: { id: String(req.params.id) },
@@ -195,8 +196,8 @@ taskRouter.patch(
       return;
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.update({
+    const saved = await prisma.$transaction(async (tx) => {
+      await tx.order.update({
         where: { id: task.orderId },
         data: { fulfillmentStatus: body.status },
       });
@@ -210,23 +211,64 @@ taskRouter.patch(
           performedById: req.user!.id,
         },
       });
-      const created = await reevaluateOrder(tx, order, task.assignedEmployeeId, new Date());
-      const saved = await tx.task.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
-      return { saved, created };
+      return tx.task.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
     });
-    await notifyTaskEvents(updated.created, "created");
-    res.json(serializeTask(updated.saved));
+    res.json(serializeTask(saved));
+    scheduleReevaluate({ ...saved.order, fulfillmentStatus: body.status }, task.assignedEmployeeId);
+  }),
+);
+
+taskRouter.patch(
+  "/:id/deadline",
+  asyncRoute(async (req, res) => {
+    const body = z.object({ deadline: z.string().min(1) }).parse(req.body);
+    const deadline = new Date(body.deadline);
+    if (Number.isNaN(deadline.getTime())) {
+      throw new AppError(400, "VALIDATION_ERROR", "Deadline is not a valid date.");
+    }
+    const prisma = getPrisma();
+    const task = await prisma.task.findUnique({ where: { id: String(req.params.id) } });
+    if (!task) throw new AppError(404, "NOT_FOUND", "Task not found.");
+    assertCanChangeStatus(req.user!, task);
+    if (task.deadline.getTime() === deadline.getTime()) {
+      const current = await prisma.task.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
+      res.json(serializeTask(current));
+      return;
+    }
+    const updated = await prisma.$transaction(async (tx) => {
+      const saved = await tx.task.update({
+        where: { id: task.id },
+        data: { deadline },
+        include: taskInclude,
+      });
+      await tx.auditLog.create({
+        data: {
+          taskId: task.id,
+          orderId: task.orderId,
+          action: "DEADLINE_CHANGED",
+          oldValue: task.deadline.toISOString(),
+          newValue: deadline.toISOString(),
+          performedById: req.user!.id,
+        },
+      });
+      return saved;
+    });
+    res.json(serializeTask(updated));
   }),
 );
 
 taskRouter.patch(
   "/:id/status",
+  requireAdmin,
   asyncRoute(async (req, res) => {
+    assertCanSetTaskStatus(req.user!);
     const body = z.object({ status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED"]) }).parse(req.body);
     const prisma = getPrisma();
     const task = await prisma.task.findUnique({ where: { id: String(req.params.id) } });
     if (!task) throw new AppError(404, "NOT_FOUND", "Task not found.");
-    assertCanChangeStatus(req.user!, task);
+    if (!task.assignedEmployeeId) {
+      throw new AppError(400, "VALIDATION_ERROR", "An unassigned task stays Open.");
+    }
     const updated = await prisma.$transaction(async (tx) => {
       const saved = await tx.task.update({
         where: { id: task.id },

@@ -6,6 +6,9 @@ import { AppError } from "../lib/errors.js";
 import { getPrisma } from "../lib/prisma.js";
 import { requireAdmin, requireAuth, requireCron } from "../middleware/auth.js";
 import { dashboardMetrics } from "../services/dashboard.js";
+import { scheduleReevaluate } from "../services/import.js";
+import { assertCanUpdateOrder, canUpdateOrder } from "../services/permissions.js";
+import { FULFILLMENT_STATUSES } from "../services/rules.js";
 import { buildDailyReport, reportToCsv } from "../services/reports.js";
 import { runOverdueCheck } from "../services/overdue.js";
 
@@ -62,7 +65,7 @@ orderRouter.get(
         where,
         include: {
           assignedEmployee: { select: { id: true, name: true, email: true } },
-          tasks: { where: { status: { not: "RESOLVED" } }, select: { id: true, category: true, priority: true, status: true } },
+          tasks: { select: { id: true, category: true, priority: true, status: true, assignedEmployeeId: true } },
         },
         orderBy: { orderDate: "desc" },
         skip: page.skip,
@@ -72,10 +75,73 @@ orderRouter.get(
     res.json({
       data: orders.map((order) => ({
         ...serializeOrder(order),
-        openTasks: order.tasks,
+        editable: canUpdateOrder(req.user!, order),
+        openTasks: order.tasks.filter((task) => task.status !== "RESOLVED"),
       })),
       meta: { page: page.page, pageSize: page.pageSize, total },
     });
+  }),
+);
+
+orderRouter.patch(
+  "/:id/status",
+  asyncRoute(async (req, res) => {
+    const body = z.object({ status: z.enum(FULFILLMENT_STATUSES) }).parse(req.body);
+    const prisma = getPrisma();
+    const current = await prisma.order.findUnique({
+      where: { id: String(req.params.id) },
+      include: { tasks: { select: { id: true, assignedEmployeeId: true } } },
+    });
+    if (!current) throw new AppError(404, "NOT_FOUND", "Order not found.");
+    assertCanUpdateOrder(req.user!, current);
+    if (current.fulfillmentStatus === body.status) {
+      const order = await prisma.order.findUniqueOrThrow({
+        where: { id: current.id },
+        include: {
+          assignedEmployee: { select: { id: true, name: true, email: true } },
+          tasks: { select: { id: true, category: true, priority: true, status: true, assignedEmployeeId: true } },
+        },
+      });
+      res.json({
+        ...serializeOrder(order),
+        editable: true,
+        openTasks: order.tasks.filter((task) => task.status !== "RESOLVED"),
+      });
+      return;
+    }
+
+    const saved = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.update({
+        where: { id: current.id },
+        data: { fulfillmentStatus: body.status },
+      });
+      const auditTask = current.tasks[0];
+      if (auditTask) {
+        await tx.auditLog.create({
+          data: {
+            taskId: auditTask.id,
+            orderId: order.id,
+            action: "ORDER_STATUS_UPDATED",
+            oldValue: current.fulfillmentStatus,
+            newValue: body.status,
+            performedById: req.user!.id,
+          },
+        });
+      }
+      return tx.order.findUniqueOrThrow({
+        where: { id: order.id },
+        include: {
+          assignedEmployee: { select: { id: true, name: true, email: true } },
+          tasks: { select: { id: true, category: true, priority: true, status: true, assignedEmployeeId: true } },
+        },
+      });
+    });
+    res.json({
+      ...serializeOrder(saved),
+      editable: true,
+      openTasks: saved.tasks.filter((task) => task.status !== "RESOLVED"),
+    });
+    scheduleReevaluate(saved, saved.assignedEmployeeId ?? (req.user!.role === "STAFF" ? req.user!.id : null));
   }),
 );
 
@@ -93,6 +159,7 @@ orderRouter.get(
     if (!order) throw new AppError(404, "NOT_FOUND", "Order not found.");
     res.json({
       ...serializeOrder(order),
+      editable: canUpdateOrder(req.user!, order),
       tasks: order.tasks.map((task) => ({
         id: task.id,
         category: task.category,
@@ -100,7 +167,8 @@ orderRouter.get(
         status: task.status,
         reason: task.reason,
         deadline: task.deadline.toISOString(),
-        assignedEmployee: task.assignedEmployee?.name ?? "Unassigned",
+        assignedEmployeeId: task.assignedEmployeeId,
+        assignedEmployee: task.assignedEmployee?.name ?? "Open",
       })),
       dataQuality: order.dataQualityIssues.map((issue) => ({ code: issue.code, message: issue.message })),
     });

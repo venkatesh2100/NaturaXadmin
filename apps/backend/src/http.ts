@@ -17,7 +17,7 @@ const filterSchema = z.object({
   priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
   status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED"]).optional(),
   search: z.string().max(120).optional(),
-  sort: z.enum(["deadline", "priority", "createdAt", "customer"]).default("deadline"),
+  sort: z.enum(["deadline", "priority", "createdAt", "customer"]).default("priority"),
   order: z.enum(["asc", "desc"]).default("asc"),
   page: z.coerce.number().int().optional(),
   pageSize: z.coerce.number().int().optional(),

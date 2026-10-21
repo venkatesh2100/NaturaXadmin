@@ -49,7 +49,7 @@ export async function notifyTaskEvent(taskId: string, event: "created" | "overdu
       orderRef: task.order.orderId,
       category: CATEGORY_LABELS[task.category] ?? task.category,
       priority: task.priority,
-      employee: task.assignedEmployee?.name ?? "Unassigned",
+      employee: task.assignedEmployee?.name ?? "Open",
       deadline: task.deadline.toISOString(),
       action: task.actionRequired,
       url: `${env.WEB_ORIGIN}/tasks/${task.id}`,

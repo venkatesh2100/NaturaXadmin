@@ -15,5 +15,25 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    image: naturax-api:local
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgresql://naturax:naturax@postgres:5432/naturax
+      WEB_ORIGIN: http://localhost:3000
+      SESSION_SECRET: local-compose-session-secret
+      CRON_SECRET: local-compose-cron-secret
+      DEV_LOGIN_ENABLED: "true"
+      DISCORD_NOTIFICATIONS_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   naturax_pg:

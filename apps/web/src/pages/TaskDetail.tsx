@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
-import { useAuth } from "../auth";
-import { Banner, PageTitle, PriorityMark, StatusText } from "../components/Shell";
-import { formatMoney, formatStatus, formatWhen } from "../format";
-import { CATEGORY_LABELS, ORDER_STATUS_OPTIONS, type OrderProgress, type Task, type TaskStatus, type User } from "../types";
+import { useAuth } from "../store";
+import { Banner, PageTitle, PriorityMark, StatusText, buttonClass } from "../components/Shell";
+import { Loading } from "../components/Spinner";
+import { formatAction, formatMoney, formatStatus, formatWhen, toDateTimeLocal } from "../format";
+import { CATEGORY_LABELS, ORDER_STATUS_OPTIONS, STATUS_LABELS, type OrderProgress, type Task, type TaskStatus, type User } from "../types";
 
 type Detail = Task & {
   dataQuality: { code: string; message: string }[];
@@ -13,11 +14,10 @@ type Detail = Task & {
 
 export function TaskDetailPage() {
   const { id } = useParams();
-  const { user } = useAuth();
+  const user = useAuth((state) => state.user);
   const [task, setTask] = useState<Detail | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
 
   function load() {
     if (!id) return;
@@ -33,67 +33,56 @@ export function TaskDetailPage() {
     }
   }, [id, user?.role]);
 
-  async function updateStatus(status: TaskStatus) {
+  function apply(change: (current: Detail) => Detail, request: () => Promise<unknown>, fallback: string) {
+    if (!task) return;
+    const previous = task;
     setError("");
-    setMessage("");
-    try {
-      await api(`/tasks/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
-      setMessage("Status saved.");
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update status.");
-    }
+    setTask(change(task));
+    void request().catch((err: unknown) => {
+      setTask(previous);
+      setError(err instanceof Error ? err.message : fallback);
+    });
   }
 
-  async function updateOrderStatus(status: OrderProgress) {
-    setError("");
-    setMessage("");
-    try {
-      await api(`/tasks/${id}/order-status`, { method: "PATCH", body: JSON.stringify({ status }) });
-      setMessage("Order status saved.");
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update order status.");
-    }
+  function updateStatus(status: TaskStatus) {
+    apply((current) => ({ ...current, status }), () => api(`/tasks/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }), "Could not update status.");
   }
 
-  async function claim() {
-    setError("");
-    setMessage("");
-    try {
-      await api(`/tasks/${id}/claim`, { method: "POST" });
-      setMessage("Task picked.");
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not pick this task.");
-    }
+  function updateOrderStatus(status: OrderProgress) {
+    apply((current) => ({ ...current, order: { ...current.order, fulfillmentStatus: status } }), () => api(`/tasks/${id}/order-status`, { method: "PATCH", body: JSON.stringify({ status }) }), "Could not update order status.");
   }
 
-  async function reassign(employeeId: string) {
-    setError("");
-    setMessage("");
-    try {
-      await api(`/tasks/${id}/assignment`, {
-        method: "PATCH",
-        body: JSON.stringify({ employeeId: employeeId || null }),
-      });
-      setMessage("Assignment saved.");
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not reassign.");
-    }
+  function claim() {
+    if (!user) return;
+    apply((current) => ({ ...current, assignedEmployee: { id: user.id, name: user.name, email: user.email } }), () => api(`/tasks/${id}/claim`, { method: "POST" }), "Could not pick this task.");
+  }
+
+  function updateDeadline(value: string) {
+    if (!value) return;
+    const deadline = new Date(value).toISOString();
+    apply((current) => ({ ...current, deadline, overdue: new Date(deadline).getTime() < Date.now() }), () => api(`/tasks/${id}/deadline`, { method: "PATCH", body: JSON.stringify({ deadline }) }), "Could not update the deadline.");
+  }
+
+  function reassign(employeeId: string) {
+    const person = users.find((employee) => employee.id === employeeId);
+    const overdueHandoff = Boolean(person && task?.overdue && task.assignedEmployee && task.assignedEmployee.id !== person.id);
+    apply((current) => ({
+      ...current,
+      assignedEmployee: person ? { id: person.id, name: person.name, email: person.email } : null,
+      status: person ? current.status : "OPEN",
+      priority: overdueHandoff ? "HIGH" : current.priority,
+    }), () => api(`/tasks/${id}/assignment`, { method: "PATCH", body: JSON.stringify({ employeeId: employeeId || null }) }), "Could not reassign.");
   }
 
   if (error && !task) return <Banner>{error}</Banner>;
-  if (!task) return <p className="text-sm text-stone-500">Loading task…</p>;
+  if (!task) return <Loading />;
 
   const canUpdate = user?.role === "ADMIN" || user?.id === task.assignedEmployee?.id;
 
   return (
     <div>
-      <PageTitle title={task.order.orderId} detail={CATEGORY_LABELS[task.category]} />
+      <PageTitle title={task.order.orderId} detail={`${CATEGORY_LABELS[task.category]}. ${task.reason}`} />
       {error && <Banner>{error}</Banner>}
-      {message && <p className="mb-4 text-sm text-brand">{message}</p>}
       <div className="grid gap-4 lg:grid-cols-[1.4fr_0.8fr]">
         <section className="rounded-xl border border-line bg-white p-5">
           <div className="flex flex-wrap items-center gap-4">
@@ -109,8 +98,8 @@ export function TaskDetailPage() {
             <Fact label="Order value" value={formatMoney(task.order.orderValue)} />
             <Fact label="Payment" value={task.order.paymentType} />
             <Fact label="Assigned to" value={task.assignedEmployee?.name ?? "Unassigned"} />
-            <Fact label="Imported status" value={formatStatus(task.order.orderStatus)} />
-            <Fact label="Order status" value={formatStatus(task.order.fulfillmentStatus)} />
+            <Fact label="Status in the file" value={formatStatus(task.order.orderStatus)} />
+            <Fact label="Live order status" value={formatStatus(task.order.fulfillmentStatus)} />
             <Fact label="Deadline" value={formatWhen(task.deadline)} />
             <Fact label="Ordered" value={formatWhen(task.order.orderDate)} />
             <Fact label="Dispatched" value={formatWhen(task.order.dispatchDate)} />
@@ -119,15 +108,16 @@ export function TaskDetailPage() {
           </dl>
           <p className="mt-4 text-sm"><Link className="text-brand" to={`/orders/${task.order.id}`}>View order</Link></p>
           {user?.role !== "ADMIN" && !task.assignedEmployee && (
-            <button className="mt-5 rounded-md bg-moss px-4 py-2 text-sm font-medium text-white" onClick={() => void claim()}>
+            <button className={`mt-5 ${buttonClass("primary")}`} onClick={() => void claim()}>
               Pick this task
             </button>
           )}
           {canUpdate && (
             <label className="mt-5 block text-sm">
-              Update order status
+              Live order status
+              <span className="mt-0.5 block text-xs text-black/45">Set this after you confirm, ship, or learn the delivery failed.</span>
               <select
-                className="mt-1 w-full max-w-sm rounded-md border border-line px-2 py-1.5"
+                className="mt-1 w-full max-w-[11rem] rounded-md border border-line"
                 value={task.order.fulfillmentStatus}
                 onChange={(event) => void updateOrderStatus(event.target.value as OrderProgress)}
               >
@@ -137,19 +127,29 @@ export function TaskDetailPage() {
               </select>
             </label>
           )}
+          {user?.role === "ADMIN" && task.assignedEmployee && (
+            <label className="mt-4 block text-sm">
+              Task status
+              <span className="mt-0.5 block text-xs text-black/45">Open means not started. In progress means someone is on it. Resolved removes it from today’s queue.</span>
+              <select className="mt-1 w-full max-w-[11rem] rounded-md border border-line" value={task.status} onChange={(event) => updateStatus(event.target.value as TaskStatus)}>
+                {(Object.keys(STATUS_LABELS) as TaskStatus[]).map((status) => (
+                  <option key={status} value={status}>{STATUS_LABELS[status]}</option>
+                ))}
+              </select>
+            </label>
+          )}
           {canUpdate && (
-            <div className="mt-5 flex flex-wrap gap-2">
-              {(["OPEN", "IN_PROGRESS", "RESOLVED"] as TaskStatus[]).map((status) => (
-                <button key={status} className="rounded-md border border-line px-3 py-1.5 text-sm disabled:bg-stone-100" disabled={task.status === status} onClick={() => void updateStatus(status)}>
-                  Mark {status === "IN_PROGRESS" ? "in progress" : status.toLowerCase()}
-                </button>
-              ))}
-            </div>
+            <label className="mt-4 block text-sm">
+              Response deadline
+              <span className="mt-0.5 block text-xs text-black/45">When this follow-up should be done. It is separate from the customer’s expected delivery date.</span>
+              <input className="mt-1 rounded-md border border-line" type="datetime-local" value={toDateTimeLocal(task.deadline)} onChange={(event) => updateDeadline(event.target.value)} />
+            </label>
           )}
           {user?.role === "ADMIN" && (
             <label className="mt-4 block text-sm">
               Assign to employee
-              <select className="mt-1 w-full max-w-sm rounded-md border border-line px-2 py-1.5" value={task.assignedEmployee?.id ?? ""} onChange={(event) => void reassign(event.target.value)}>
+              <span className="mt-0.5 block text-xs text-black/45">Choose Unassigned to put it back on the open queue. Handing an overdue task to someone else raises it to high.</span>
+              <select className="mt-1 w-full max-w-[11rem] rounded-md border border-line" value={task.assignedEmployee?.id ?? ""} onChange={(event) => void reassign(event.target.value)}>
                 <option value="">Unassigned</option>
                 {users.map((person) => (
                   <option key={person.id} value={person.id}>{person.name}</option>
@@ -164,20 +164,37 @@ export function TaskDetailPage() {
           )}
         </section>
         <section className="rounded-xl border border-line bg-white p-5">
-          <h2 className="text-sm font-semibold">Audit history</h2>
-          <ol className="mt-3 space-y-3">
-            {task.audit.map((entry) => (
-              <li key={entry.id} className="border-b border-line pb-3 text-sm last:border-0">
-                <p className="font-medium">{entry.action.replaceAll("_", " ")}</p>
-                <p className="text-stone-600">{entry.performedBy} · {formatWhen(entry.createdAt)}</p>
-                {(entry.oldValue || entry.newValue) && <p className="mt-1 break-words text-xs text-stone-500">{entry.oldValue ?? "—"} → {entry.newValue ?? "—"}</p>}
-              </li>
-            ))}
-          </ol>
+          <h2 className="text-sm font-semibold">Activity</h2>
+          <p className="mt-1 text-xs text-black/50">Newest change first.</p>
+          {task.audit.length === 0 ? <p className="mt-3 text-sm text-black/50">No activity yet.</p> : (
+            <ol className="mt-3 space-y-3">
+              {task.audit.map((entry) => (
+                <li key={entry.id} className="border-b border-line pb-3 text-sm last:border-0">
+                  <p className="font-medium">{formatAction(entry.action)}</p>
+                  <p className="text-stone-600">{entry.performedBy} · {formatWhen(entry.createdAt)}</p>
+                  {(entry.oldValue || entry.newValue) && <p className="mt-1 break-words text-xs text-stone-500">{readableChange(entry.oldValue)} → {readableChange(entry.newValue)}</p>}
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       </div>
     </div>
   );
+}
+
+function readableChange(value: string | null): string {
+  if (!value) return "—";
+  try {
+    const parsed = JSON.parse(value) as { name?: string | null; category?: string; priority?: string };
+    if (parsed && typeof parsed === "object") {
+      if ("name" in parsed) return parsed.name ?? "Unassigned";
+      if (parsed.category || parsed.priority) return [parsed.category, parsed.priority].filter(Boolean).join(" · ").replaceAll("_", " ").toLowerCase();
+    }
+  } catch {
+    return value.replaceAll("_", " ");
+  }
+  return value.replaceAll("_", " ");
 }
 
 function Fact({ label, value }: { label: string; value: string }) {

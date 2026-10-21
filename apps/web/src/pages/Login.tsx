@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api, apiUrl } from "../api";
-import { useAuth } from "../auth";
+import Spinner from "../components/Spinner";
+import { useAuth } from "../store";
 import type { User } from "../types";
 
 type Door = "admin" | "employee";
@@ -12,7 +13,8 @@ const DEMO = {
 } as const;
 
 export function LoginPage() {
-  const { user, refresh } = useAuth();
+  const user = useAuth((state) => state.user);
+  const setUser = useAuth((state) => state.setUser);
   const navigate = useNavigate();
   const [door, setDoor] = useState<Door>("admin");
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -21,6 +23,7 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [params] = useSearchParams();
 
   useEffect(() => {
@@ -44,6 +47,7 @@ export function LoginPage() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    setSubmitting(true);
     try {
       const result = await api<{ user: User }>(mode === "login" ? "/auth/login" : "/auth/register", {
         method: "POST",
@@ -52,43 +56,46 @@ export function LoginPage() {
       const expected = door === "admin" ? "ADMIN" : "STAFF";
       if (result.user.role !== expected) {
         await api("/auth/logout", { method: "POST" });
+        setUser(null);
         setError(door === "admin"
           ? "That account is an employee. Use the employee sign-in."
           : "That account is an admin. Use the admin sign-in.");
         return;
       }
-      await refresh();
+      setUser(result.user);
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
     <div className="grid min-h-screen place-items-center px-4">
       <form onSubmit={onSubmit} className="w-full max-w-md rounded-2xl border border-line bg-white p-8">
-        <p className="text-xs font-medium uppercase tracking-wide text-stone-500">VitaNatura Elements</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">
+        <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">VitaNatura Elements</p>
+        <h1 className="mt-2 font-display text-[2rem] leading-none font-medium tracking-[-0.03em]">
           {mode === "register" ? "Create employee account" : `${DEMO[door].label} sign in`}
         </h1>
         <p className="mt-2 text-sm text-stone-600">
           {door === "admin"
-            ? "Admins assign tasks to employees. Demo password is naturax123."
-            : "Employees pick unassigned tasks and update order status. They cannot assign tasks to other people. Demo password is naturax123."}
+            ? "Admins see every order, assign work, and mark tasks resolved. Demo password is naturax123."
+            : "Employees see the same desk, pick an unassigned task, and update the orders assigned to them. Demo password is naturax123."}
         </p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(["admin", "employee"] as const).map((option) => (
             <button
               key={option}
               type="button"
-              className={`rounded-md border px-3 py-2 text-sm font-medium ${door === option ? "border-moss bg-moss text-white" : "border-line bg-white"}`}
+              className={`rounded-[9px] border px-3 py-2 text-sm font-medium ${door === option ? "border-ink bg-ink text-white" : "border-line bg-white text-ink"}`}
               onClick={() => chooseDoor(option)}
             >
               {DEMO[option].label}
             </button>
           ))}
         </div>
-        {error && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
+        {error && <p className="mt-4 rounded-[10px] bg-crit-bg px-3 py-2 text-sm text-crit">{error}</p>}
         {mode === "register" && (
           <label className="mt-4 block text-sm">
             Name
@@ -103,8 +110,8 @@ export function LoginPage() {
           Password
           <input className="mt-1 w-full rounded-md border border-line px-3 py-2" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required />
         </label>
-        <button className="mt-6 w-full rounded-md bg-moss px-4 py-2 text-sm font-medium text-white">
-          {mode === "login" ? `Sign in as ${DEMO[door].label.toLowerCase()}` : "Create employee account"}
+        <button className="mt-6 inline-flex w-full items-center justify-center rounded-[9px] bg-ink px-4 py-2 text-sm font-medium text-white disabled:opacity-70" disabled={submitting}>
+          {submitting ? <Spinner size={18} /> : mode === "login" ? `Sign in as ${DEMO[door].label.toLowerCase()}` : "Create employee account"}
         </button>
         {googleEnabled && mode === "login" && (
           <a href={apiUrl("/auth/google")} className="mt-3 block w-full rounded-md border border-line px-4 py-2 text-center text-sm font-medium">

@@ -39,9 +39,9 @@ export function taskWhere(filters: TaskFilters): Prisma.TaskWhereInput {
 export function taskOrderBy(
   sort: string,
   direction: "asc" | "desc",
-): Prisma.TaskOrderByWithRelationInput {
-  if (sort === "createdAt") return { createdAt: direction };
-  if (sort === "priority") return { priority: direction };
-  if (sort === "customer") return { order: { customerName: direction } };
-  return { deadline: direction };
+): Prisma.TaskOrderByWithRelationInput[] {
+  if (sort === "createdAt") return [{ createdAt: direction }, { priority: "asc" }];
+  if (sort === "customer") return [{ order: { customerName: direction } }, { priority: "asc" }];
+  if (sort === "deadline") return [{ deadline: direction }, { priority: "asc" }];
+  return [{ priority: direction }, { deadline: "asc" }];
 }

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+apps/api/src/generated/
+coverage/
+.prisma/
+*.tsbuildinfo
+.wrangler/
+.dev.vars

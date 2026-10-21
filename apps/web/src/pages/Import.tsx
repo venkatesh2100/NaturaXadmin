@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, apiUrl } from "../api";
-import { Banner, PageTitle } from "../components/Shell";
+import { Banner, PageTitle, buttonClass } from "../components/Shell";
+import Spinner, { Loading } from "../components/Spinner";
+import { formatWhen } from "../format";
 
 type Summary = {
   batchId: string;
@@ -21,9 +23,13 @@ export function ImportPage() {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [batchesReady, setBatchesReady] = useState(false);
 
   function loadBatches() {
-    api<{ batches: Batch[] }>("/imports").then((result) => setBatches(result.batches)).catch(() => undefined);
+    api<{ batches: Batch[] }>("/imports")
+      .then((result) => setBatches(result.batches))
+      .catch(() => undefined)
+      .finally(() => setBatchesReady(true));
   }
 
   useEffect(() => {
@@ -50,25 +56,33 @@ export function ImportPage() {
 
   return (
     <div>
-      <PageTitle title="Import orders" detail="CSV or Excel. Invalid rows stay in the summary and can be downloaded. They do not create follow-up tasks." />
+      <PageTitle title="Import orders" detail="Upload a CSV or Excel file. Valid rows become orders and, when a rule matches, follow-up tasks. Rejected rows stay in the summary and can be downloaded. They do not create tasks." />
       {error && <Banner>{error}</Banner>}
+      <ol className="mb-4 grid gap-3 text-sm md:grid-cols-3">
+        <li className="rounded-2xl bg-paper px-4 py-3"><span className="font-medium">1. Choose the file.</span> Use the order export with dates, status, and customer phone.</li>
+        <li className="rounded-2xl bg-paper px-4 py-3"><span className="font-medium">2. Import.</span> The desk checks each row and opens tasks for orders that need a person.</li>
+        <li className="rounded-2xl bg-paper px-4 py-3"><span className="font-medium">3. Review.</span> Fix rejected rows, then look at Today for the new high-priority work.</li>
+      </ol>
       <form onSubmit={onSubmit} className="rounded-xl border border-line bg-white p-5">
-        <input
-          className="block w-full text-sm"
-          type="file"
-          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-        />
-        <button className="mt-4 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={!file || busy}>
-          {busy ? "Importing…" : "Upload and evaluate"}
+        <label className="block text-sm">
+          Order file
+          <input
+            className="mt-2 block w-full text-sm"
+            type="file"
+            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <button className={`mt-4 ${buttonClass("primary")} disabled:opacity-50`} disabled={!file || busy}>
+          {busy ? <Spinner /> : "Import orders"}
         </button>
-        <p className="mt-3 text-xs text-stone-500">Maximum 5 MB and 5,000 rows. Sample files live in apps/api/fixtures.</p>
+        <p className="mt-3 text-xs text-stone-500">Maximum 5 MB and 5,000 rows. A second import updates the same order and does not open a duplicate task.</p>
       </form>
       {summary && (
         <section className="mt-6">
           <div className="grid gap-3 sm:grid-cols-4">
-            <Mini label="Rows" value={summary.totalRows} />
-            <Mini label="Imported" value={summary.successfulRows} />
+            <Mini label="Rows in file" value={summary.totalRows} />
+            <Mini label="Saved" value={summary.successfulRows} />
             <Mini label="Rejected" value={summary.rejectedRows} />
             <Mini label="New tasks" value={summary.tasksCreated} />
           </div>
@@ -104,14 +118,21 @@ export function ImportPage() {
         </section>
       )}
       <section className="mt-8">
-        <h2 className="text-sm font-semibold">Recent imports</h2>
-        <ul className="mt-2 space-y-2 text-sm">
-          {batches.map((batch) => (
-            <li key={batch.id} className="rounded-lg border border-line bg-white px-3 py-2">
-              {batch.filename} · {batch.successfulRows} imported · {batch.rejectedRows} rejected · {batch.createdBy}
-            </li>
-          ))}
-        </ul>
+        <h2 className="text-lg font-semibold">Recent imports</h2>
+        <p className="mt-1 text-sm text-black/55">Who uploaded a file, and how many rows were saved or rejected.</p>
+        {!batchesReady && <Loading />}
+        {batchesReady && batches.length === 0 ? <p className="mt-3 text-sm text-black/50">No imports yet.</p> : null}
+        {batchesReady && batches.length > 0 && (
+          <ul className="mt-3 divide-y divide-line rounded-xl border border-line bg-white">
+            {batches.map((batch) => (
+              <li key={batch.id} className="px-4 py-3 text-sm">
+                <p className="font-medium">{batch.filename}</p>
+                <p className="text-black/60">{batch.successfulRows} saved · {batch.rejectedRows} rejected · {batch.createdBy}</p>
+                <p className="text-xs text-black/45">{formatWhen(batch.createdAt)}</p>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

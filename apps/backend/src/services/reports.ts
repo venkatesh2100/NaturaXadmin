@@ -40,7 +40,7 @@ export async function buildDailyReport(filters: TaskFilters, now = new Date()) {
 
   const pendingByEmployee = new Map<string, number>();
   for (const task of unresolved) {
-    const name = task.assignedEmployee?.name ?? "Unassigned";
+    const name = task.assignedEmployee?.name ?? "Open";
     pendingByEmployee.set(name, (pendingByEmployee.get(name) ?? 0) + 1);
   }
 
@@ -116,7 +116,7 @@ function serializeReportTask(task: {
     category: task.category,
     reason: task.reason,
     priority: task.priority,
-    employee: task.assignedEmployee?.name ?? "Unassigned",
+    employee: task.assignedEmployee?.name ?? "Open",
     actionRequired: task.actionRequired,
     deadline: task.deadline.toISOString(),
     status: task.status,

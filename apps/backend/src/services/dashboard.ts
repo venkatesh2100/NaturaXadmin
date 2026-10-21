@@ -83,7 +83,7 @@ export async function dashboardMetrics(filters: TaskFilters, now = new Date()) {
     byCategory: categoryGroups.map((group) => ({ category: group.category, count: group._count._all })),
     pendingByEmployee: employeeGroups.map((group) => ({
       employeeId: group.assignedEmployeeId,
-      employee: group.assignedEmployeeId ? names.get(group.assignedEmployeeId) ?? "Unknown" : "Unassigned",
+      employee: group.assignedEmployeeId ? names.get(group.assignedEmployeeId) ?? "Unknown" : "Open",
       count: group._count._all,
     })),
     recentActivity: recent.map((entry) => ({
@@ -117,6 +117,9 @@ function describeActivity(entry: {
   }
   if (entry.action === "STATUS_CHANGED") {
     return `marked ${orderId} ${pretty(entry.newValue)}`;
+  }
+  if (entry.action === "DEADLINE_CHANGED") {
+    return `changed the deadline for ${orderId}`;
   }
   return `${entry.action.replaceAll("_", " ").toLowerCase()} ${orderId}`;
 }
