@@ -28,6 +28,11 @@ export function DashboardPage() {
   const greeting = user?.role === "ADMIN"
     ? "You assign work and close tasks. Start with anything marked high."
     : "Pick an open task, then update the order after you call the customer.";
+  const employeeRows = metrics
+    ? user?.role === "ADMIN"
+      ? metrics.pendingByEmployee
+      : metrics.pendingByEmployee.filter((row) => row.employeeId === user?.id)
+    : [];
 
   return (
     <div>
@@ -126,13 +131,19 @@ export function DashboardPage() {
             </div>
             <div>
               <h2 className="text-lg font-semibold">Open by employee</h2>
-              <p className="mt-1 text-sm text-black/55">Unfinished tasks currently sitting with each person. Unassigned means nobody has picked them yet.</p>
-              {metrics.pendingByEmployee.length === 0 ? <Empty>No open tasks are assigned.</Empty> : (
+              <p className="mt-1 text-sm text-black/55">
+                {user?.role === "ADMIN"
+                  ? "Select a person to open their unfinished tasks. Unassigned means nobody has picked them yet."
+                  : "Your unfinished tasks. Other people’s queues stay with an admin."}
+              </p>
+              {employeeRows.length === 0 ? <Empty>{user?.role === "ADMIN" ? "No open tasks are assigned." : "No open tasks are assigned to you."}</Empty> : (
                 <ul className="mt-3 divide-y divide-line">
-                  {metrics.pendingByEmployee.map((row) => (
-                    <li key={row.employeeId ?? "none"} className="flex items-center justify-between py-3 text-sm">
-                      <span>{row.employeeId ? row.employee : "Unassigned"}</span>
-                      <span className="tabular text-black/55">{row.count} open</span>
+                  {employeeRows.map((row) => (
+                    <li key={row.employeeId ?? "none"}>
+                      <Link to={employeeTasksHref(row.employeeId, user?.role === "ADMIN")} className="-mx-1 flex items-center justify-between rounded-[9px] px-1 py-3 text-sm hover:bg-paper">
+                        <span>{row.employeeId ? row.employee : "Unassigned"}</span>
+                        <span className="tabular text-black/55">{row.count} open</span>
+                      </Link>
                     </li>
                   ))}
                 </ul>
@@ -143,6 +154,11 @@ export function DashboardPage() {
       )}
     </div>
   );
+}
+
+function employeeTasksHref(employeeId: string | null, admin: boolean): string {
+  if (!admin) return "/my-tasks";
+  return `/tasks?employeeId=${encodeURIComponent(employeeId ?? "unassigned")}`;
 }
 
 function Guide({ title, body }: { title: string; body: string }) {

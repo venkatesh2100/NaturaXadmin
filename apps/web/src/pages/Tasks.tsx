@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, Navigate } from "react-router";
 import { api } from "../api";
 import { useAuth } from "../store";
 import { Filters, toApiQuery, useFilters } from "../components/Filters";
@@ -19,6 +19,7 @@ export function TasksPage({ mine = false }: { mine?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [claimingId, setClaimingId] = useState("");
   const scoped = mine && user ? { ...filters, employeeId: user.id } : filters;
+  const foreignQueue = Boolean(user && user.role !== "ADMIN" && !mine && filters.employeeId && filters.employeeId !== user.id && filters.employeeId !== "unassigned");
   const query = toApiQuery(scoped);
 
   function patchTask(taskId: string, change: (task: Task) => Task, request: () => Promise<unknown>, fallback: string) {
@@ -43,14 +44,14 @@ export function TasksPage({ mine = false }: { mine?: boolean }) {
   }
 
   useEffect(() => {
-    if (mine && !user) return;
+    if ((mine && !user) || foreignQueue) return;
     setLoading(true);
     setError("");
     api<Page<Task>>(`/tasks?${query}`)
       .then(setPage)
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [query, mine, user]);
+  }, [query, mine, user, foreignQueue]);
 
   useEffect(() => {
     if (user?.role !== "ADMIN") return;
@@ -60,6 +61,8 @@ export function TasksPage({ mine = false }: { mine?: boolean }) {
   }, [user?.role]);
 
   const totalPages = page ? Math.max(1, Math.ceil(page.meta.total / page.meta.pageSize)) : 1;
+
+  if (foreignQueue) return <Navigate to="/my-tasks" replace />;
 
   return (
     <div>
@@ -71,7 +74,7 @@ export function TasksPage({ mine = false }: { mine?: boolean }) {
             ? "Assign a person, then set the task to Open, In progress, or Resolved. If you hand an overdue task to someone else, it becomes high priority."
             : "Take an unassigned task with Pick. You can change order status and deadline only on tasks that are yours."}
       />
-      <Filters filters={filters} setFilter={setFilter} setFilters={setFilters} showEmployee={!mine} />
+      <Filters filters={filters} setFilter={setFilter} setFilters={setFilters} showEmployee={!mine && user?.role === "ADMIN"} />
       {error && <Banner>{error}</Banner>}
       {loading && <Loading />}
       {!loading && page && page.data.length === 0 && <Empty>{mine ? "No tasks are assigned to you." : "No tasks match these filters."}</Empty>}
